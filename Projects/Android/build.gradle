@@ -87,7 +87,8 @@ android {
 
             externalNativeBuild {
                 ndkBuild {
-                    arguments "NDK_DEBUG=1","USE_ASAN=1"
+                    // ASan requires bundling wrap.sh and libclang_rt.asan-aarch64-android.so
+                    arguments "NDK_DEBUG=1","USE_ASAN=0"
                 }
             }
         }
@@ -119,9 +120,11 @@ android {
         disable 'ExpiredTargetSdkVersion'
     }
 
-    //packagingOptions {
-    //    exclude 'lib/arm64-v8a/libopenxr_loader.so'
-    //}
+    packaging {
+        jniLibs {
+            excludes += ['lib/arm64-v8a/libopenxr_loader.so']
+        }
+    }
 
     compileOptions {
         sourceCompatibility = '1.8'

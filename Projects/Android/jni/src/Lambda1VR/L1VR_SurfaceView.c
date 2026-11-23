@@ -320,10 +320,17 @@ void R_ChangeDisplaySettings( int width, int height, qboolean fullscreen );
 
 int VR_SetRefreshRate(int refreshRate)
 {
-	if (strstr(gAppState.OpenXRHMD, "meta") != NULL)
+	if (TBXR_IsMetaRuntime())
 	{
-		OXR(gAppState.pfnRequestDisplayRefreshRate(gAppState.Session, (float) refreshRate));
-		return refreshRate;
+		if (gAppState.pfnRequestDisplayRefreshRate != NULL)
+		{
+			OXR(gAppState.pfnRequestDisplayRefreshRate(gAppState.Session, (float) refreshRate));
+			return refreshRate;
+		}
+	}
+	else if (TBXR_IsPicoRuntime())
+	{
+		return TBXR_SetPicoRefreshRate(refreshRate);
 	}
 
 	return 0;
@@ -427,7 +434,7 @@ void VR_Init()
 	vr_weapon_stabilised = Cvar_Get( "vr_weapon_stabilised", "0", CVAR_READ_ONLY, "Whether user has engaged weapon stabilisation or not" );
     vr_lasersight = Cvar_Get( "vr_lasersight", "0", CVAR_ARCHIVE, "Enables laser-sight" );
 
-	if (strstr(gAppState.OpenXRHMD, "pico") != NULL)
+	if (TBXR_IsPicoRuntime())
 	{
 		vr_hud_yoffset = Cvar_Get("vr_hud_yoffset", "60", CVAR_ARCHIVE, "y offset for the HUD" );
 		vr_refresh = Cvar_Get("vr_refresh", "72", CVAR_ARCHIVE, "Refresh Rate");

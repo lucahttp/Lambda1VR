@@ -34,33 +34,56 @@ import android.view.SurfaceView;
 import android.view.WindowManager;
 import android.view.KeyEvent;
 
-import static android.system.Os.setenv;
-
 
 @SuppressLint("SdCardPath") public class GLES3JNIActivity extends Activity implements SurfaceHolder.Callback
 {
+	private static final String TAG = "Lambda1VR";
+
 	private static String manufacturer = "";
 
 	static
 	{
-		manufacturer = Build.MANUFACTURER.toLowerCase(Locale.ROOT);
+		String rawManufacturer = Build.MANUFACTURER != null ? Build.MANUFACTURER : "";
+		manufacturer = rawManufacturer.toLowerCase(Locale.ROOT);
 		if (manufacturer.contains("oculus")) // rename oculus to meta as this will probably happen in the future anyway
 		{
 			manufacturer = "meta";
+		}
+		else if (manufacturer.contains("pico") || manufacturer.contains("bytedance"))
+		{
+			manufacturer = "pico";
+		}
+
+		try
+		{
+			setenv("OPENXR_HMD", manufacturer, true);
+		}
+		catch (Throwable t)
+		{
+			Log.e(TAG, "Failed to set OPENXR_HMD", t);
 		}
 
 		try
 		{
 			//Load manufacturer specific loader
 			System.loadLibrary("openxr_loader_" + manufacturer);
-			setenv("OPENXR_HMD", manufacturer, true);
-		} catch (Exception e)
-		{}
+			Log.i(TAG, "Loaded openxr_loader_" + manufacturer);
+		}
+		catch (Throwable t)
+		{
+			Log.w(TAG, "Failed to load openxr_loader_" + manufacturer + ", falling back to openxr_loader", t);
+			try
+			{
+				System.loadLibrary("openxr_loader");
+			}
+			catch (Throwable fallbackErr)
+			{
+				Log.e(TAG, "Failed to load fallback openxr_loader", fallbackErr);
+			}
+		}
 
 		System.loadLibrary( "xash" );
 	}
-
-	private static final String TAG = "Lambda1VR";
 
 	private static final int REQUEST_MANAGE_ALL_FILES = 2296;
 

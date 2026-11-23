@@ -1,4 +1,4 @@
-APP_PLATFORM := android-24
+APP_PLATFORM := android-32
 
 APPLICATIONMK_PATH = $(call my-dir)
 NDK_MODULE_PATH := $(APPLICATIONMK_PATH)/../..
@@ -20,6 +20,6 @@ HLSDK_PATH  := $(APPLICATIONMK_PATH)/src/HLSDK/halflife/
 APP_ALLOW_MISSING_DEPS=true
 
 APP_MODULES := gl4es xash menu client server client_bshift server_bshift client_opfor server_opfor client_aomdc server_aomdc client_theyhunger server_theyhunger
-APP_STL := c++_shared
+APP_STL := c++_static
 
 
