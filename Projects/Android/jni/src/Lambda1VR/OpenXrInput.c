@@ -1,3 +1,4 @@
+#include <string.h>
 #include "VrCommon.h"
 
 extern ovrApp gAppState;
@@ -59,6 +60,48 @@ XrActionSuggestedBinding ActionSuggestedBinding(XrAction action, XrPath path) {
     return asb;
 }
 
+// Suggest a binding table for one interaction profile.
+//
+// The runtime picks the profile that matches the controllers it actually sees,
+// so we suggest every profile we know about and let it sort them out: a
+// profile the runtime does not implement is rejected with
+// XR_ERROR_PATH_UNSUPPORTED and costs us nothing.
+//
+// A suggestion is ATOMIC, though. If any single path in the table is not in
+// that profile's allowlist, the whole call fails with XR_ERROR_PATH_UNSUPPORTED
+// and NOT ONE binding is applied - one wrong path silently costs the player
+// their entire controller. (OpenXR spec 1.1, "Suggesting Bindings for
+// Interaction Profiles".) That is why every table below only lists paths that
+// really exist in the profile it is used for.
+static bool SuggestBindings(const char* profilePath, XrActionSuggestedBinding* bindings, int count) {
+    XrPath profile;
+    XrResult result = xrStringToPath(gAppState.Instance, profilePath, &profile);
+    if (XR_FAILED(result)) {
+        ALOGE("[openxr] %s: cannot resolve interaction profile path (%d)", profilePath, (int)result);
+        return false;
+    }
+
+    XrInteractionProfileSuggestedBinding suggestedBindings = {0};
+    suggestedBindings.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
+    suggestedBindings.interactionProfile = profile;
+    suggestedBindings.suggestedBindings = bindings;
+    suggestedBindings.countSuggestedBindings = count;
+    suggestedBindings.next = NULL;
+
+    result = xrSuggestInteractionProfileBindings(gAppState.Instance, &suggestedBindings);
+    if (result == XR_ERROR_PATH_UNSUPPORTED) {
+        ALOGI("[openxr] %s: profile not supported by runtime (expected for other headsets)", profilePath);
+        return false;
+    }
+    if (XR_FAILED(result)) {
+        ALOGE("[openxr] %s: no bindings applied (%d)", profilePath, (int)result);
+        return false;
+    }
+
+    ALOGI("[openxr] bindings for %s suggested", profilePath);
+    return true;
+}
+
 XrActionStateBoolean GetActionStateBoolean(XrAction action, int hand) {
     XrActionStateGetInfo getInfo = {};
     getInfo.type = XR_TYPE_ACTION_STATE_GET_INFO;
@@ -112,7 +155,7 @@ void CreateAction(
         int countSubactionPaths,
         XrPath* subactionPaths,
         XrAction* action) {
-    ALOGV("CreateAction %s, %", actionName, countSubactionPaths);
+    ALOGV("CreateAction %s, %d", actionName, countSubactionPaths);
 
     XrActionCreateInfo aci = {};
     aci.type = XR_TYPE_ACTION_CREATE_INFO;
@@ -203,11 +246,9 @@ void TBXR_InitActions( void )
     XrPath AXValuePath[SIDE_COUNT];
     XrPath homeClickPath[SIDE_COUNT];
     XrPath BYValuePath[SIDE_COUNT];
-    XrPath backPath[SIDE_COUNT];
     XrPath sideClickPath[SIDE_COUNT];
     XrPath triggerPath[SIDE_COUNT];
     XrPath joystickPath[SIDE_COUNT];
-    XrPath batteryPath[SIDE_COUNT];
 
     XrPath GripPath[SIDE_COUNT];
     XrPath AXTouchPath[SIDE_COUNT];
@@ -259,11 +300,6 @@ void TBXR_InitActions( void )
     CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/left/input/thumbrest/touch", &thumbrestPath[SIDE_LEFT]));
     CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/right/input/thumbrest/touch", &thumbrestPath[SIDE_RIGHT]));
 
-    CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/left/input/back/click", &backPath[SIDE_LEFT]));
-    CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/right/input/back/click", &backPath[SIDE_RIGHT]));
-    CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/left/input/battery/value", &batteryPath[SIDE_LEFT]));
-    CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/right/input/battery/value", &batteryPath[SIDE_RIGHT]));
-
     CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/left/input/x/click", &XValuePath[SIDE_LEFT]));
     CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/left/input/y/click", &YValuePath[SIDE_LEFT]));
     CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/right/input/a/click", &AValuePath[SIDE_RIGHT]));
@@ -274,73 +310,25 @@ void TBXR_InitActions( void )
     CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/user/hand/right/input/b/touch", &BTouchPath[SIDE_RIGHT]));
 
 
-    XrResult result;
+    // ---------------------------------------------------------------------
+    // Interaction profiles
+    //
+    // We suggest one table per profile we know about. The runtime keeps the
+    // bindings of the profile its controllers actually report and ignores the
+    // rest, so suggesting a profile the headset does not have is harmless -
+    // it just comes back as XR_ERROR_PATH_UNSUPPORTED.
+    //
+    // Remember that a suggestion is atomic: one path that is not part of the
+    // profile rejects the whole table and leaves the player with a dead
+    // controller. Every table below therefore only lists paths that really
+    // exist in the profile it is used for.
+    // ---------------------------------------------------------------------
 
-    //First try Pico Devices
+    int acceptedProfiles = 0;
+
+    // Meta Quest / Oculus Touch. Also the profile most other runtimes
+    // understand, so this one is suggested everywhere.
     {
-        XrPath picoMixedRealityInteractionProfilePath;
-        CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/interaction_profiles/pico/neo3_controller",
-                                   &picoMixedRealityInteractionProfilePath));
-
-        XrActionSuggestedBinding bindings[128];
-        int currBinding = 0;
-        bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(joystickAction, thumbstickPosPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(joystickAction, thumbstickPosPath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(thumbstickTouchAction, thumbstickTouchPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(thumbstickTouchAction, thumbstickTouchPath[SIDE_RIGHT]);
-
-        bindings[currBinding++] = ActionSuggestedBinding(triggerAction, triggerValuePath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(triggerAction, triggerValuePath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(TriggerTouchAction, triggerTouchPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(TriggerTouchAction, triggerTouchPath[SIDE_RIGHT]);
-
-        bindings[currBinding++] = ActionSuggestedBinding(sideAction, squeezeClickPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(sideAction, squeezeClickPath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(GripAction, squeezeValuePath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(GripAction, squeezeValuePath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(poseAction, posePath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(poseAction, posePath[SIDE_RIGHT]);
-
-        bindings[currBinding++] = ActionSuggestedBinding(homeAction, systemPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(homeAction, systemPath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(backAction, backPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(backAction, backPath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(batteryAction, batteryPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(batteryAction, batteryPath[SIDE_RIGHT]);
-
-        bindings[currBinding++] = ActionSuggestedBinding(ThumbrestTouchAction, thumbrestPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(ThumbrestTouchAction, thumbrestPath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(vibrateAction, hapticPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(vibrateAction, hapticPath[SIDE_RIGHT]);
-
-        bindings[currBinding++] = ActionSuggestedBinding(XTouchAction, XTouchPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(YTouchAction, YTouchPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(ATouchAction, ATouchPath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(BTouchAction, BTouchPath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(XAction, XValuePath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(YAction, YValuePath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(AAction, AValuePath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(BAction, BValuePath[SIDE_RIGHT]);
-        bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_LEFT]);
-        bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_RIGHT]);
-
-        XrInteractionProfileSuggestedBinding suggestedBindings = {};
-        suggestedBindings.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
-        suggestedBindings.interactionProfile = picoMixedRealityInteractionProfilePath;
-        suggestedBindings.suggestedBindings = bindings;
-        suggestedBindings.countSuggestedBindings = currBinding;
-        suggestedBindings.next = NULL;
-        result = xrSuggestInteractionProfileBindings(gAppState.Instance, &suggestedBindings);
-    }
-
-    if (result != XR_SUCCESS)
-    {
-        XrPath touchControllerInteractionProfilePath;
-        CHECK_XRCMD(xrStringToPath(gAppState.Instance, "/interaction_profiles/oculus/touch_controller",
-                                   &touchControllerInteractionProfilePath));
-
         XrActionSuggestedBinding bindings[128];
         int currBinding = 0;
         bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_LEFT]);
@@ -378,13 +366,147 @@ void TBXR_InitActions( void )
         bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_LEFT]);
         bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_RIGHT]);
 
-        XrInteractionProfileSuggestedBinding suggestedBindings = {};
-        suggestedBindings.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
-        suggestedBindings.interactionProfile = touchControllerInteractionProfilePath;
-        suggestedBindings.suggestedBindings = bindings;
-        suggestedBindings.countSuggestedBindings = currBinding;
-        suggestedBindings.next = NULL;
-        result = xrSuggestInteractionProfileBindings(gAppState.Instance, &suggestedBindings);
+        if (SuggestBindings("/interaction_profiles/oculus/touch_controller", bindings, currBinding)) {
+            acceptedProfiles++;
+        }
+    }
+
+    if (!TBXR_IsMetaRuntime())
+    {
+        // PICO 4, PICO Neo3 and PICO 4 Ultra. All three share the same physical
+        // layout (a/b on the right, x/y and menu on the left) and the same
+        // component set in the OpenXR registry, so one table serves them all.
+        //
+        // Note what is NOT here: /input/back/click, /input/battery/value and
+        // /input/thumbrest/touch do not exist in any PICO profile, and the
+        // system button belongs to the PICO compositor. The menu button on the
+        // LEFT hand carries backAction (xrButton_Enter -> K_ESCAPE, menu / pause).
+        if (gAppState.HasPicoControllerExt || gAppState.HasUltraControllerExt)
+        {
+            XrActionSuggestedBinding bindings[128];
+            int currBinding = 0;
+            bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(joystickAction, thumbstickPosPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(joystickAction, thumbstickPosPath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(thumbstickTouchAction, thumbstickTouchPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(thumbstickTouchAction, thumbstickTouchPath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(triggerAction, triggerValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(triggerAction, triggerValuePath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(TriggerTouchAction, triggerTouchPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(TriggerTouchAction, triggerTouchPath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(GripAction, squeezeValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(GripAction, squeezeValuePath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(poseAction, posePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(poseAction, posePath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(vibrateAction, hapticPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(vibrateAction, hapticPath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(XTouchAction, XTouchPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(YTouchAction, YTouchPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(ATouchAction, ATouchPath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(BTouchAction, BTouchPath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(XAction, XValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(YAction, YValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(AAction, AValuePath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(BAction, BValuePath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_RIGHT]);
+
+            // Menu / pause (xrButton_Enter -> K_ESCAPE) - bound on the left hand
+            bindings[currBinding++] = ActionSuggestedBinding(backAction, menuClickPath[SIDE_LEFT]);
+
+            if (gAppState.HasPicoControllerExt) {
+                if (SuggestBindings("/interaction_profiles/bytedance/pico4_controller", bindings, currBinding)) {
+                    acceptedProfiles++;
+                }
+                if (SuggestBindings("/interaction_profiles/bytedance/pico_neo3_controller", bindings, currBinding)) {
+                    acceptedProfiles++;
+                }
+            }
+            if (gAppState.HasUltraControllerExt) {
+                if (SuggestBindings("/interaction_profiles/bytedance/pico_ultra_controller_bd", bindings, currBinding)) {
+                    acceptedProfiles++;
+                }
+            }
+        }
+
+        // PICO G3: a much older controller with just a trigger, a thumbstick
+        // and a menu button - no face buttons, no grip, no haptic.
+        // Single controller assignable to either hand; XR_BD_controller_interaction
+        // allows /input/menu/click on both /user/hand/left and /user/hand/right.
+        if (gAppState.HasPicoControllerExt)
+        {
+            XrActionSuggestedBinding bindings[128];
+            int currBinding = 0;
+            bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(joystickAction, thumbstickPosPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(joystickAction, thumbstickPosPath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(triggerAction, triggerValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(triggerAction, triggerValuePath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(poseAction, posePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(poseAction, posePath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(backAction, menuClickPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(backAction, menuClickPath[SIDE_RIGHT]);
+
+            if (SuggestBindings("/interaction_profiles/bytedance/pico_g3_controller", bindings, currBinding)) {
+                acceptedProfiles++;
+            }
+        }
+
+        // PICO 4S and the newest PICO runtimes report an interaction profile of
+        // their own that is not in the Khronos registry - the runtime accepts
+        // it anyway, so we keep a table with just the paths that runtime is
+        // known to expose.
+        {
+            XrActionSuggestedBinding bindings[128];
+            int currBinding = 0;
+            bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(touchpadAction, thumbstickClickPath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(joystickAction, thumbstickPosPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(joystickAction, thumbstickPosPath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(thumbstickTouchAction, thumbstickTouchPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(thumbstickTouchAction, thumbstickTouchPath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(triggerAction, triggerValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(triggerAction, triggerValuePath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(TriggerTouchAction, triggerTouchPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(TriggerTouchAction, triggerTouchPath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(GripAction, squeezeValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(GripAction, squeezeValuePath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(XAction, XValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(YAction, YValuePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(AAction, AValuePath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(BAction, BValuePath[SIDE_RIGHT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(backAction, menuClickPath[SIDE_LEFT]);
+
+            bindings[currBinding++] = ActionSuggestedBinding(poseAction, posePath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(poseAction, posePath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(aimAction, aimPath[SIDE_RIGHT]);
+            bindings[currBinding++] = ActionSuggestedBinding(vibrateAction, hapticPath[SIDE_LEFT]);
+            bindings[currBinding++] = ActionSuggestedBinding(vibrateAction, hapticPath[SIDE_RIGHT]);
+
+            if (SuggestBindings("/interaction_profiles/bytedance/pico4s_controller", bindings, currBinding)) {
+                acceptedProfiles++;
+            }
+        }
+    }
+
+    if (acceptedProfiles == 0) {
+        ALOGE("[openxr] ERROR: no interaction profile bindings were accepted by the runtime!");
     }
 
     XrActionSpaceCreateInfo actionSpaceInfo = {};
@@ -427,25 +549,80 @@ void TBXR_SyncActions( void )
     }
 }
 
+// Log the interaction profile the runtime settled on for each hand, once per session
+// (or whenever forced). If a controller does not respond, this tells us whether our
+// suggested bindings were the ones the runtime picked up.
+void TBXR_LogActiveInteractionProfiles(bool force)
+{
+    static XrSession lastLoggedSession = XR_NULL_HANDLE;
+    static bool loggedSide[SIDE_COUNT] = {false, false};
+
+    if (gAppState.Session == XR_NULL_HANDLE || gAppState.Instance == XR_NULL_HANDLE) {
+        return;
+    }
+
+    if (force || lastLoggedSession != gAppState.Session) {
+        loggedSide[SIDE_LEFT] = false;
+        loggedSide[SIDE_RIGHT] = false;
+        lastLoggedSession = gAppState.Session;
+    }
+
+    for (int side = 0; side < SIDE_COUNT; side++) {
+        if (loggedSide[side]) {
+            continue;
+        }
+
+        XrInteractionProfileState profileState = {0};
+        profileState.type = XR_TYPE_INTERACTION_PROFILE_STATE;
+        XrResult res = xrGetCurrentInteractionProfile(gAppState.Session, handSubactionPath[side], &profileState);
+        if (XR_SUCCEEDED(res) && profileState.interactionProfile != XR_NULL_PATH) {
+            char profileName[XR_MAX_PATH_LENGTH];
+            profileName[0] = '\0';
+            uint32_t profileNameLength = 0;
+            if (XR_SUCCEEDED(xrPathToString(gAppState.Instance, profileState.interactionProfile,
+                                            sizeof(profileName), &profileNameLength, profileName))) {
+                ALOGI("[openxr] active interaction profile (%s hand): %s",
+                      side == SIDE_LEFT ? "left" : "right", profileName);
+                loggedSide[side] = true;
+            }
+        }
+    }
+}
+
 void TBXR_UpdateControllers( )
 {
     TBXR_SyncActions();
 
+    TBXR_LogActiveInteractionProfiles(false);
+
     //get controller poses
     for (int i = 0; i < 2; i++) {
-        XrSpaceVelocity vel = {};
+        XrSpaceVelocity vel = {0};
         vel.type = XR_TYPE_SPACE_VELOCITY;
-        XrSpaceLocation loc = {};
+        XrSpaceLocation loc = {0};
         loc.type = XR_TYPE_SPACE_LOCATION;
         loc.next = &vel;
+        loc.pose.orientation.w = 1.0f;
         XrResult res = xrLocateSpace(aimSpace[i], gAppState.CurrentSpace, gAppState.FrameState.predictedDisplayTime, &loc);
         if (res != XR_SUCCESS) {
             ALOGE("xrLocateSpace error: %d", (int)res);
         }
 
-        gAppState.TrackedController[i].Active = (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
-        gAppState.TrackedController[i].Pose = loc.pose;
-        gAppState.TrackedController[i].Velocity = vel;
+        bool orientationValid = (res == XR_SUCCESS) && ((loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0);
+        gAppState.TrackedController[i].Active = orientationValid;
+        if (orientationValid) {
+            gAppState.TrackedController[i].Pose = loc.pose;
+            gAppState.TrackedController[i].Velocity = vel;
+        } else {
+            XrQuaternionf q = gAppState.TrackedController[i].Pose.orientation;
+            float normSq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+            if (normSq < 1e-6f) {
+                gAppState.TrackedController[i].Pose.orientation.x = 0.0f;
+                gAppState.TrackedController[i].Pose.orientation.y = 0.0f;
+                gAppState.TrackedController[i].Pose.orientation.z = 0.0f;
+                gAppState.TrackedController[i].Pose.orientation.w = 1.0f;
+            }
+        }
     }
 
     leftRemoteTracking_new = gAppState.TrackedController[0];
@@ -512,10 +689,10 @@ void TBXR_Vibrate( int duration, int chan, float intensity )
         if ((channel + 1) & (chan+1))
         {
             if (vibration_channel_duration[channel] > 0.0f)
-                return;
+                continue;
 
             if (vibration_channel_duration[channel] == -1.0f && duration != 0.0f)
-                return;
+                continue;
 
             vibration_channel_duration[channel] = duration;
             vibration_channel_intensity[channel] = intensity;
@@ -524,45 +701,69 @@ void TBXR_Vibrate( int duration, int chan, float intensity )
 }
 
 void TBXR_ProcessHaptics() {
-    static float lastFrameTime = 0.0f;
-    float timestamp = (float)(TBXR_GetTimeInMilliSeconds( ));
-    float frametime = timestamp - lastFrameTime;
+    static double lastFrameTime = 0.0;
+    static bool hapticActive[2] = {false, false};
+    static XrSession lastHapticSession = XR_NULL_HANDLE;
+
+    double timestamp = TBXR_GetTimeInMilliSeconds();
+    if (lastFrameTime == 0.0) {
+        lastFrameTime = timestamp;
+    }
+    double frametime = timestamp - lastFrameTime;
+    if (frametime < 0.0) {
+        frametime = 0.0;
+    }
     lastFrameTime = timestamp;
+
+    if (lastHapticSession != gAppState.Session) {
+        hapticActive[0] = false;
+        hapticActive[1] = false;
+        lastHapticSession = gAppState.Session;
+    }
+
+    if (gAppState.Session == XR_NULL_HANDLE || vibrateAction == XR_NULL_HANDLE) {
+        return;
+    }
 
     for (int i = 0; i < 2; ++i) {
         if (vibration_channel_duration[i] > 0.0f ||
             vibration_channel_duration[i] == -1.0f) {
 
             // fire haptics using output action
-            XrHapticVibration vibration = {};
+            XrHapticVibration vibration = {0};
             vibration.type = XR_TYPE_HAPTIC_VIBRATION;
             vibration.next = NULL;
             vibration.amplitude = vibration_channel_intensity[i];
-            vibration.duration = ToXrTime(vibration_channel_duration[i]);
-            vibration.frequency = 3000;
-            XrHapticActionInfo hapticActionInfo = {};
+            double durationSec = (vibration_channel_duration[i] == -1.0f)
+                ? 0.1
+                : ((double)vibration_channel_duration[i] * 0.001);
+            vibration.duration = ToXrTime(durationSec);
+            vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+            XrHapticActionInfo hapticActionInfo = {0};
             hapticActionInfo.type = XR_TYPE_HAPTIC_ACTION_INFO;
             hapticActionInfo.next = NULL;
             hapticActionInfo.action = vibrateAction;
             hapticActionInfo.subactionPath = handSubactionPath[i];
             OXR(xrApplyHapticFeedback(gAppState.Session, &hapticActionInfo, (const XrHapticBaseHeader*)&vibration));
+            hapticActive[i] = true;
 
             if (vibration_channel_duration[i] != -1.0f) {
-                vibration_channel_duration[i] -= frametime;
+                vibration_channel_duration[i] -= (float)frametime;
 
-                if (vibration_channel_duration[i] < 0.0f) {
+                if (vibration_channel_duration[i] <= 0.0f) {
                     vibration_channel_duration[i] = 0.0f;
                     vibration_channel_intensity[i] = 0.0f;
                 }
             }
-        } else {
+        } else if (hapticActive[i]) {
             // Stop haptics
-            XrHapticActionInfo hapticActionInfo = {};
+            XrHapticActionInfo hapticActionInfo = {0};
             hapticActionInfo.type = XR_TYPE_HAPTIC_ACTION_INFO;
             hapticActionInfo.next = NULL;
             hapticActionInfo.action = vibrateAction;
             hapticActionInfo.subactionPath = handSubactionPath[i];
             OXR(xrStopHapticFeedback(gAppState.Session, &hapticActionInfo));
+            hapticActive[i] = false;
         }
     }
 }

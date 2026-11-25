@@ -29,6 +29,7 @@
 #define RAD2DEG(a) ((a) * (180.0f / (float) M_PI))
 
 #define ALOGE(...) __android_log_print( ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__ )
+#define ALOGI(...) __android_log_print( ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__ )
 
 #if DEBUG
 #define ALOGV(...) __android_log_print( ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__ )
@@ -236,6 +237,10 @@ typedef struct
     bool				Visible;
     bool                FrameSetup;
     char*               OpenXRHMD;
+    bool                HasPerfSettingsExt;
+    bool                HasPicoConfigsExt;
+    bool                HasPicoControllerExt;
+    bool                HasUltraControllerExt;
 
     float               Width;
     float               Height;
@@ -300,6 +305,10 @@ void ovrAppThread_Destroy( ovrAppThread * appThread, JNIEnv * env );
 
 void QuatToYawPitchRoll(XrQuaternionf q, vec3_t rotation, vec3_t out);
 
+// True when the OpenXR runtime we are talking to is a Meta (Oculus) or PICO one.
+bool TBXR_IsMetaRuntime(void);
+bool TBXR_IsPicoRuntime(void);
+
 /*
  * Surface Lifecycle Message Queue
  */
@@ -337,6 +346,7 @@ void VR_Shutdown();
 //Reusable Team Beef OpenXR stuff (in TBXR_Common.cpp)
 double TBXR_GetTimeInMilliSeconds();
 int TBXR_GetRefresh();
+int TBXR_SetPicoRefreshRate(int refreshRate);
 void TBXR_Recenter();
 void TBXR_InitialiseOpenXR();
 void TBXR_WaitForSessionActive();
@@ -345,6 +355,7 @@ void TBXR_EnterVR();
 void TBXR_LeaveVR( );
 void TBXR_GetScreenRes(int *width, int *height);
 void TBXR_InitActions( void );
+void TBXR_LogActiveInteractionProfiles(bool force);
 void TBXR_Vibrate(int duration, int channel, float intensity );
 void TBXR_ProcessHaptics();
 void TBXR_FrameSetup();

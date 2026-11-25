@@ -40,8 +40,9 @@ void HandleInput_OneController( ovrInputStateTrackedRemote *pDominantTrackedRemo
 	static bool dominantGripPushed = false;
 	static float dominantGripPushTime = 0.0f;
 
-	//Menu button - always on the left controller - unavoidable
+	//Menu button - always on the left controller (unless its on the right - GB)
 	handleTrackedControllerButton(&leftTrackedRemoteState_new, &leftTrackedRemoteState_old, xrButton_Enter, K_ESCAPE);
+	handleTrackedControllerButton(&rightTrackedRemoteState_new, &rightTrackedRemoteState_old, xrButton_Enter, K_ESCAPE);
 
     //Menu control - Uses "touch"
 	if (VR_UseScreenLayer())

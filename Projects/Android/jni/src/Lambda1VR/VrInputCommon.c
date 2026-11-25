@@ -7,6 +7,7 @@ Authors		:	Simon Brown
 
 *************************************************************************************/
 
+#include <math.h>
 #include <common/common.h>
 #include <common/library.h>
 #include <common/cvardef.h>
@@ -115,7 +116,7 @@ void sendButtonActionSimple(const char* action)
 
 bool between(float min, float val, float max)
 {
-    return (min < val) && (val < max);
+    return (min <= val) && (val <= max);
 }
 
 void sendButtonAction(const char* action, long buttonDown)
@@ -213,5 +214,5 @@ bool isBackpack(ovrTrackedController* pTracking)
         angleFromHmd += 360.0f;
     }
 
-    return abs(angleFromHmd) > 120;
+    return fabs(angleFromHmd) > 120;
 }
